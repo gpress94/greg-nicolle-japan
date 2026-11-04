@@ -1,0 +1,5 @@
+# The readable itinerary and any saved plan exports stay on this computer.
+.local/
+*.plan.json
+.DS_Store
+.claude/
