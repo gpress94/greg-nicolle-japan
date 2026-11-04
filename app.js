@@ -17,6 +17,7 @@
 // data/days.js cannot inject markup (XSS-safe).
 
 import { TRIP, DAYS } from './data/days.js';
+import { tripClock } from './clock.js';
 // Firebase web config (tracked → ships on GitHub Pages). Pure local data, no
 // network/DOM, so importing it at module top level is Node-safe (the auth gate's
 // SDK import is dynamic + browser-only; see the bootstrap block at the bottom).
@@ -103,11 +104,14 @@ function dayDelta(aIso, bIso) {
 // call `new Date()` directly in the navigation/landing logic below.
 // ---------------------------------------------------------------------------
 
-let nowProvider = () => new Date();
+// "Now" is the local time wherever Greg & Nicolle are (clock.js), so family in
+// other time zones see the same day and the same Now/Next as the two of them.
+const tripNow = tripClock(TRIP?.clock);
+let nowProvider = tripNow;
 
 /**
  * The single source of "now" for the whole app. Returns a Date. Defaults to the
- * real wall clock; override via setNow() (e.g. time-travel mode, tests).
+ * trip's local clock; override via setNow() (e.g. time-travel mode, tests).
  * @returns {Date}
  */
 export function getNow() {
@@ -122,12 +126,12 @@ export function getNow() {
 
 /**
  * Override the clock. Pass a function returning a Date to pin/scrub "now"; pass
- * null/undefined to restore the real wall clock. Returns the active provider.
+ * null/undefined to restore the trip's clock. Returns the active provider.
  * @param {(() => Date) | null | undefined} fn
  * @returns {() => Date}
  */
 export function setNow(fn) {
-  nowProvider = typeof fn === 'function' ? fn : () => new Date();
+  nowProvider = typeof fn === 'function' ? fn : tripNow;
   return nowProvider;
 }
 
@@ -770,6 +774,7 @@ const TRANSIT_MODE_EMOJI = {
   train: '🚆',
   subway: 'Ⓜ️',
   plane: '✈️',
+  boat: '🚤',
 };
 
 /**
@@ -779,6 +784,8 @@ const TRANSIT_MODE_EMOJI = {
  */
 function travelEmoji(how) {
   const h = String(how ?? '').toLowerCase();
+  if (/flight|plane/.test(h)) return '✈️';
+  if (/boat|ferry/.test(h)) return '🚤';
   if (h.includes('taxi')) return '🚕';
   if (h.includes('bus')) return '🚌';
   if (/\bjr\b|shinkansen|train/.test(h)) return '🚆';
@@ -829,8 +836,10 @@ const FRAMINGS = {
  *   Afternoon → 12 ≤ hour ≤ 16
  *   Evening   → hour ≥ 17
  *
- * Items missing `time` or with an unparseable hour are bucketed into Morning AND
- * a `console.warn` is emitted (surface the data gap rather than silently degrade).
+ * A `time` of "Morning", "Midday", "Afternoon", "Evening" or "Night" picks its
+ * bucket by name; it is for things with no set clock time, such as a flight the
+ * resort times the day before. An item with no `time` at all stays in the same
+ * bucket as the item before it (Morning if it comes first).
  *
  * Each returned item carries an `indexInPlan` matching its position in the input
  * — this index is what `buildPlanItem` passes to `nearestPrecedingCoords` for
@@ -848,18 +857,15 @@ export function bucketPlanByDayPart(plan) {
   const afternoon = [];
   const evening = [];
   const arr = Array.isArray(plan) ? plan : [];
+  const byName = { morning, midday: afternoon, afternoon, evening, night: evening };
+  let bucket = morning;
 
   arr.forEach((item, i) => {
-    const time = item && typeof item.time === 'string' ? item.time : '';
+    const time = item && typeof item.time === 'string' ? item.time.trim() : '';
     const hour = parseInt(time.slice(0, 2), 10);
-    if (!Number.isFinite(hour)) {
-      console.warn(`[app] plan item at index ${i} has no parseable time ("${time}"); bucketing into Morning.`);
-      morning.push({ item, indexInPlan: i });
-      return;
-    }
-    if (hour < 12) morning.push({ item, indexInPlan: i });
-    else if (hour <= 16) afternoon.push({ item, indexInPlan: i });
-    else evening.push({ item, indexInPlan: i });
+    if (Number.isFinite(hour)) bucket = hour < 12 ? morning : hour <= 16 ? afternoon : evening;
+    else if (byName[time.toLowerCase()]) bucket = byName[time.toLowerCase()];
+    bucket.push({ item, indexInPlan: i });
   });
 
   return [
@@ -1113,7 +1119,8 @@ export function markPlanProgress(plan, now = getNow()) {
     const start = starts[i];
     if (start == null || start > mins) return null;
     const nextStart = starts.slice(i + 1).find((s) => s != null);
-    const end = toMinutes(it.until) ?? nextStart ?? start;
+    let end = toMinutes(it.until) ?? nextStart ?? start;
+    if (end < start) end += 24 * 60; // runs past midnight, e.g. 22:15–00:15
     return mins < end ? 'now' : 'past';
   });
   const next = starts.findIndex((s) => s != null && s > mins);
@@ -1976,6 +1983,9 @@ export function renderDay(day, framingName = 'plan') {
     intro.appendChild(el('span', null, day.intro));
     headerBlock.appendChild(intro);
   }
+  // Family read this from other time zones; the itinerary's times are local.
+  const timeNote = getTrip().note;
+  if (typeof timeNote === 'string' && timeNote) headerBlock.appendChild(el('p', 'trip-time-note', timeNote));
 
   // Reminisce live-gallery lifecycle. Default no-ops so the non-reminisce return
   // (and the seam-absent reminisce path) are unaffected; the live subscription is
@@ -2356,7 +2366,7 @@ export function renderOverview(daysUntil, onEnter) {
   const tripOver = afterEnd != null && afterEnd > 0;
 
   head.appendChild(el('p', 'overview-kicker',
-    beforeTrip ? 'Counting down' : tripOver ? 'Looking back' : 'In Japan now'));
+    beforeTrip ? 'Counting down' : tripOver ? 'Looking back' : 'On the trip now'));
   head.appendChild(el('h1', 'overview-title', trip.title ?? 'Our trip'));
 
   const count = el('div', 'overview-count');
@@ -2374,6 +2384,7 @@ export function renderOverview(daysUntil, onEnter) {
   if (trip.start) {
     head.appendChild(el('p', 'overview-dates', formatTripRange(trip.start, trip.end)));
   }
+  if (typeof trip.note === 'string' && trip.note) head.appendChild(el('p', 'trip-time-note', trip.note));
   view.appendChild(head);
 
   // --- Still to book (before and during the trip) ---------------------------

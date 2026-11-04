@@ -20,7 +20,7 @@
 // Every handler is wrapped defensively: any error falls back to a plain
 // fetch(request) so a service-worker bug can never block the page.
 
-const CACHE_VERSION = 'family-058eca1019';
+const CACHE_VERSION = 'family-f2cb974ebd';
 const SHELL_CACHE = `app-shell-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const EXPECTED_CACHES = [SHELL_CACHE, RUNTIME_CACHE];
@@ -50,6 +50,8 @@ const PRECACHE_URLS = [
   // app.js statically imports ./firebase-config.js at module top level, so the
   // auth gate can't boot offline unless the config ships in the shell cache.
   'firebase-config.js',
+  // app.js imports the trip clock, which keeps "now" on the travellers' local time.
+  'clock.js',
   'data/days.js',
   // data/days.js waits for unlock.js to decrypt data/days.enc.json, so both
   // must be in the shell cache for the site to open offline.

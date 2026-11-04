@@ -1,5 +1,7 @@
 # The readable itinerary and any saved plan exports stay on this computer.
 .local/
+# The days after Japan and the trip clock (see README); only the encrypted copy is published.
+private/
 *.plan.json
 .DS_Store
 .claude/

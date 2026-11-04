@@ -39,7 +39,7 @@ function ask(box) {
     const card = document.createElement('form');
     card.className = 'fg-card';
     const title = Object.assign(document.createElement('h1'), { textContent: 'Japan, together' });
-    const line = Object.assign(document.createElement('p'), { textContent: 'Greg & Nicolle’s honeymoon in Japan. Enter the password they shared with you.' });
+    const line = Object.assign(document.createElement('p'), { textContent: 'Greg & Nicolle’s honeymoon, day by day. Enter the password they shared with you.' });
     const label = Object.assign(document.createElement('label'), { textContent: 'Password', htmlFor: 'fg-password' });
     const input = Object.assign(document.createElement('input'), { id: 'fg-password', type: 'password', autocomplete: 'current-password', required: true });
     input.setAttribute('autocapitalize', 'none');

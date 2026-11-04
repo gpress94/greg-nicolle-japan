@@ -1,7 +1,7 @@
 {
   "name": "Japan, together",
   "short_name": "Japan",
-  "description": "Greg & Nicolle's day-by-day honeymoon in Japan. Works offline.",
+  "description": "Greg & Nicolle's honeymoon, day by day. Works offline.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

@@ -9,6 +9,10 @@
 // saved GET /api/plan response. --planner points at a planner checkout; it
 // defaults to ../japan-planner, the code that is live.
 //
+// The planner only covers Japan. The days after it and the trip clock come
+// from private/trip-extras.json, which git ignores. The build stops if that file is missing, so a rebuild can't quietly
+// drop those days; --japan-only builds without them.
+//
 // Nothing private is committed or published:
 // - The password comes from FAMILY_PASSWORD, never from this repo.
 // - The planner's full notes, document and ticket links, and allergy lines are
@@ -19,7 +23,7 @@
 // - The readable copy goes to .local/, which is ignored by git.
 
 import { registerHooks } from 'node:module';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { webcrypto } from 'node:crypto';
@@ -35,6 +39,16 @@ const password = String(process.env.FAMILY_PASSWORD ?? '').trim().toLowerCase();
 if (!planFile || !password) {
   console.error('Usage: FAMILY_PASSWORD=… node --experimental-strip-types tools/build-family.mjs <plan.json> [--planner <dir>]');
   process.exit(1);
+}
+
+const EXTRAS = resolve(ROOT, 'private/trip-extras.json');
+let extras = { trip: {}, days: [] };
+if (!args.includes('--japan-only')) {
+  if (!existsSync(EXTRAS)) {
+    console.error(`Stopped: ${EXTRAS} is missing. It holds the days after Japan and the trip clock. Restore it, or pass --japan-only.`);
+    process.exit(1);
+  }
+  extras = JSON.parse(readFileSync(EXTRAS, 'utf8'));
 }
 
 const raw = JSON.parse(readFileSync(planFile, 'utf8'));
@@ -91,7 +105,7 @@ function toLodging(lodging, date) {
   });
 }
 
-const DAYS = today.days.map((d) => clean({
+const japanDays = today.days.map((d) => clean({
   date: d.date,
   base: d.base,
   title: d.title,
@@ -101,21 +115,61 @@ const DAYS = today.days.map((d) => clean({
   dayParts: d.dayParts,
   plan: d.items.map((item) => toItem(item, d.date)),
 }));
-const TRIP = { title: today.title, start: today.start, end: today.end, travelers: ['Greg', 'Nicolle'], eveningWindow: { startHour: 21, endHour: 4 } };
+
+// The hand-written days after Japan, with the same link filtering.
+const extraDays = (extras.days ?? []).map((d) => clean({
+  ...d,
+  photos: d.photos ?? [],
+  lodging: d.lodging ? clean({ ...d.lodging, mapUrl: publicUrl(d.lodging.mapUrl) }) : undefined,
+  plan: (d.plan ?? []).map((item) => clean({ ...item, website: publicUrl(item.website), mapUrl: publicUrl(item.mapUrl) })),
+}));
+const clash = extraDays.filter((d) => japanDays.some((j) => j.date === d.date)).map((d) => d.date);
+if (clash.length) {
+  console.error(`Stopped: the planner now has ${clash.join(', ')} as well. Take those days out of private/trip-extras.json first.`);
+  process.exit(1);
+}
+
+const DAYS = [...japanDays, ...extraDays].sort((a, b) => a.date.localeCompare(b.date));
+const TRIP = {
+  title: today.title,
+  start: today.start,
+  travelers: ['Greg', 'Nicolle'],
+  eveningWindow: { startHour: 21, endHour: 4 },
+  ...extras.trip, // the trip clock and the local-times note
+  end: DAYS.at(-1)?.date ?? today.end,
+};
 const output = JSON.stringify({ TRIP, DAYS });
 
-// References live in the plan's documents and reservation records; none may survive.
+// Flight numbers and phrases such as "90-minute" are not references.
 const PUBLIC_CODE = /^(?:SQ|JL|BA|NH|Q2)\d{1,4}$/;
+const looksLikeReference = (t) => !PUBLIC_CODE.test(t) && !/^\d+-[a-z]+$/i.test(t) && !/^[a-z]+-\d+$/i.test(t)
+  && ((t.length >= 5 && /\d/.test(t) && /[A-Za-z]/.test(t)) || /^\d{5,}$/.test(t));
+const TOKEN = /[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g;
+
+// The hand-written days are checked by shape: nothing in their words may look
+// like a booking reference. Links, photo credits (photographers' user names)
+// and clock times are skipped.
+const shaped = new Set();
+JSON.stringify({ trip: extras.trip, days: extraDays }, (key, value) => {
+  if (typeof value === 'string' && !/^(?:url|mapUrl|website|credit|at|local)$/.test(key)) {
+    for (const [t] of value.matchAll(TOKEN)) if (looksLikeReference(t)) shaped.add(t);
+  }
+  return value;
+});
+if (shaped.size) {
+  console.error(`Stopped: private/trip-extras.json has text that looks like a booking reference: ${[...shaped].join(', ')}. Nothing was written.`);
+  process.exit(2);
+}
+
+// References live in the plan's documents and reservation records; none may survive.
 function referencesIn(p) {
   const text = [
     ...(p.documents ?? []).flatMap((d) => [d.name, d.note, d.url]),
     ...(p.companion?.reservations ?? []).flatMap((r) => [r.stop?.note, r.cancellation, r.source]),
   ].filter(Boolean).join(' ');
   const found = new Set();
-  for (const [t] of text.matchAll(/[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g)) {
-    // Flight numbers and phrases such as "90-minute" are not references.
-    if (PUBLIC_CODE.test(t) || /^\d+-[a-z]+$/i.test(t) || /^[a-z]+-\d+$/i.test(t)) continue;
-    if ((t.length >= 5 && /\d/.test(t) && /[A-Za-z]/.test(t)) || /^\d{5,}$/.test(t)) found.add(t);
+  for (const [t] of text.matchAll(TOKEN)) {
+    if (looksLikeReference(t)) found.add(t);
   }
   // Letter-only codes, such as a six-letter booking code, follow words like "reference".
   for (const [, t] of text.matchAll(/\b(?:reference|ref|code|PNR|booking|confirmation|reservation)\s*[#:]?\s*([A-Za-z0-9]{5,8})\b/gi)) {
@@ -143,11 +197,11 @@ const box = JSON.stringify({ v: 1, iterations, salt: b64(salt), iv: b64(iv), dat
 writeFileSync(resolve(ROOT, 'data/days.enc.json'), box + '\n');
 
 // Installed phones pick up a new itinerary or shell when the service worker's version changes.
-const shell = ['index.html', 'app.js', 'unlock.js', 'data/days.js', 'manifest.json'].map((f) => readFileSync(resolve(ROOT, f), 'utf8')).join('\n');
+const shell = ['index.html', 'app.js', 'clock.js', 'unlock.js', 'data/days.js', 'manifest.json'].map((f) => readFileSync(resolve(ROOT, f), 'utf8')).join('\n');
 const stamp = Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(box + shell))).toString('hex').slice(0, 10);
 const swPath = resolve(ROOT, 'sw.js');
 writeFileSync(swPath, readFileSync(swPath, 'utf8').replace(/const CACHE_VERSION = '[^']*';/, `const CACHE_VERSION = 'family-${stamp}';`));
 
 mkdirSync(resolve(ROOT, '.local'), { recursive: true });
 writeFileSync(resolve(ROOT, '.local/days.plain.json'), JSON.stringify({ TRIP, DAYS }, null, 1) + '\n');
-console.log(`Wrote data/days.enc.json: ${DAYS.length} days, ${DAYS.reduce((n, d) => n + d.plan.length, 0)} stops. Cache version family-${stamp}.`);
+console.log(`Wrote data/days.enc.json: ${DAYS.length} days (${extraDays.length} after Japan), ${DAYS.reduce((n, d) => n + d.plan.length, 0)} stops, ${TRIP.start} to ${TRIP.end}. Cache version family-${stamp}.`);
